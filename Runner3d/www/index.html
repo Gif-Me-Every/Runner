@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>3D Runner</title>
+<style>
+html,body{margin:0;height:100%;background:#0e1116;overflow:hidden;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);}
+*{box-sizing:border-box;font-family:-apple-system,Segoe UI,Roboto,sans-serif;}
+#wrap{position:relative;width:100%;max-width:480px;margin:0 auto;height:100vh;background:#000;}
+canvas{display:block;touch-action:none;}
+#hud{position:absolute;top:14px;left:0;right:0;display:flex;justify-content:space-between;padding:0 16px;
+  color:#fff;font-weight:700;text-shadow:0 1px 3px rgba(0,0,0,.6);pointer-events:none;font-size:14px;}
+#powerup{position:absolute;top:44px;left:16px;color:#fff;font-size:12px;font-weight:700;
+  background:rgba(0,0,0,.35);padding:4px 10px;border-radius:8px;display:none;}
+#muteBtn{position:absolute;top:10px;right:14px;background:none;border:none;color:#fff;font-size:20px;cursor:pointer;
+  text-shadow:0 1px 3px rgba(0,0,0,.6);}
+#overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  background:rgba(14,17,22,.86);color:#fff;text-align:center;gap:10px;padding:16px;overflow-y:auto;}
+#overlay h1{font-size:24px;margin:0;}
+#overlay p{margin:0;color:#c6cad2;font-size:13px;}
+#overlay button.big{margin-top:6px;padding:12px 26px;border:none;border-radius:12px;background:#4d8fdb;
+  color:#fff;font-weight:700;font-size:15px;cursor:pointer;}
+#shop{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;max-width:420px;margin-top:6px;}
+.charcard{background:rgba(255,255,255,.08);border:2px solid transparent;border-radius:12px;padding:10px;width:100px;cursor:pointer;}
+.charcard.sel{border-color:#4d8fdb;}
+.charcard .swatch{width:34px;height:34px;border-radius:50%;margin:0 auto 6px;}
+.charcard b{font-size:12px;display:block;}
+.charcard span{font-size:11px;color:#c6cad2;}
+.hide{display:none !important;}
+</style>
+</head>
+<body>
+<div id="wrap">
+<div id="hud"><span>Score: <span id="score">0</span></span><span>🪙 <span id="coins">0</span></span></div>
+<div id="powerup"></div>
+<button id="muteBtn">🔊</button>
+<div id="overlay">
+  <h1 id="title">3D Runner</h1>
+  <p id="sub">Swipe/arrows: lane, jump, duck. Grab power-ups!</p>
+  <div id="shop"></div>
+  <button class="big" id="startBtn">Start Run</button>
+</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const wrap=document.getElementById('wrap');
+const scene=new THREE.Scene();
+scene.fog=new THREE.Fog(0x1c2230,10,55);
+scene.background=new THREE.Color(0x1c2230);
+const camera=new THREE.PerspectiveCamera(62,wrap.clientWidth/wrap.clientHeight,0.1,100);
+camera.position.set(0,4.4,8.5);
+camera.lookAt(0,1.4,-6);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(wrap.clientWidth,wrap.clientHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+wrap.appendChild(renderer.domElement);
+window.addEventListener('resize',()=>{
+  camera.aspect=wrap.clientWidth/wrap.clientHeight; camera.updateProjectionMatrix();
+  renderer.setSize(wrap.clientWidth,wrap.clientHeight);
+});
+
+scene.add(new THREE.HemisphereLight(0xbdd7ff,0x1a1a1a,1.0));
+const sun=new THREE.DirectionalLight(0xffe6c0,0.9);
+sun.position.set(4,10,6); scene.add(sun);
+
+const laneX=[-2.3,0,2.3];
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(9,140),new THREE.MeshStandardMaterial({color:0x2b2f38}));
+ground.rotation.x=-Math.PI/2; ground.position.z=-40; scene.add(ground);
+for(const lx of [-3.6,3.6]){
+  const wallMat=new THREE.MeshStandardMaterial({color:0x39424f});
+  const wall=new THREE.Mesh(new THREE.BoxGeometry(1,3,140),wallMat);
+  wall.position.set(lx,-1.4,-40); scene.add(wall);
+}
+const laneLineMat=new THREE.MeshBasicMaterial({color:0x55606e});
+for(const lx of [-1.15,1.15]){
+  const line=new THREE.Mesh(new THREE.PlaneGeometry(0.08,140),laneLineMat);
+  line.rotation.x=-Math.PI/2; line.position.set(lx,0.01,-40); scene.add(line);
+}
+
+const buildings=[];
+function makeBuilding(){
+  const h=4+Math.random()*7;
+  const mesh=new THREE.Mesh(new THREE.BoxGeometry(2.4,h,2.4),
+    new THREE.MeshStandardMaterial({color:[0x4a4550,0x5a4f45,0x40474f][Math.floor(Math.random()*3)]}));
+  const side=Math.random()<0.5?-6.2:6.2;
+  mesh.position.set(side,h/2-1.6,-Math.random()*100-10);
+  scene.add(mesh); buildings.push(mesh);
+}
+for(let i=0;i<14;i++) makeBuilding();
+
+function makeCharacter(skin, outfit) {
+  const g=new THREE.Group();
+  const skinMat=new THREE.MeshStandardMaterial({color:skin,roughness:0.85});
+  const outfitMat=new THREE.MeshStandardMaterial({color:outfit,roughness:0.7});
+  const pantsMat=new THREE.MeshStandardMaterial({color:0x2b2e36,roughness:0.8});
+  const hairMat=new THREE.MeshStandardMaterial({color:0x2a1f18,roughness:0.9});
+
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.26,16,16),skinMat);
+  head.position.y=1.62; head.scale.set(0.9,1,0.95); g.add(head);
+  const hair=new THREE.Mesh(new THREE.SphereGeometry(0.27,16,16,0,Math.PI*2,0,Math.PI*0.55),hairMat);
+  hair.position.y=1.7; g.add(hair);
+
+  const torso=new THREE.Mesh(new THREE.BoxGeometry(0.46,0.62,0.28),outfitMat);
+  torso.position.y=1.15; g.add(torso); g.userData.torso=torso;
+
+  const hipMat=pantsMat;
+  const legGeo=new THREE.CylinderGeometry(0.11,0.09,0.72,10);
+  legGeo.translate(0,-0.36,0);
+  const legL=new THREE.Mesh(legGeo,hipMat); legL.position.set(-0.13,0.84,0);
+  const legR=new THREE.Mesh(legGeo,hipMat); legR.position.set(0.13,0.84,0);
+  g.add(legL); g.add(legR); g.userData.legL=legL; g.userData.legR=legR;
+
+  const armGeo=new THREE.CylinderGeometry(0.08,0.07,0.58,10);
+  armGeo.translate(0,-0.29,0);
+  const armL=new THREE.Mesh(armGeo,skinMat); armL.position.set(-0.32,1.42,0);
+  const armR=new THREE.Mesh(armGeo,skinMat); armR.position.set(0.32,1.42,0);
+  g.add(armL); g.add(armR); g.userData.armL=armL; g.userData.armR=armR;
+
+  g.userData.body=torso;
+  return g;
+}
+
+const characters=[
+  {name:'Runner', skin:0xd8a878, outfit:0x35415c, cost:0},
+  {name:'Sprinter', skin:0xc78e5f, outfit:0x8a2b2b, cost:60},
+  {name:'Ranger', skin:0xe8c4a0, outfit:0x3d5c3a, cost:120},
+  {name:'Shadow', skin:0x8a6a52, outfit:0x22252c, cost:200},
+  {name:'Champion', skin:0xd8a878, outfit:0xb8902f, cost:350}
+];
+let bank=parseInt(localStorage.getItem('runnerBank')||'0');
+let unlocked=JSON.parse(localStorage.getItem('runnerUnlocked')||'[0]');
+let selChar=parseInt(localStorage.getItem('runnerSelChar')||'0');
+
+let player=makeCharacter(characters[selChar].skin, characters[selChar].outfit);
+scene.add(player);
+
+function renderShop(){
+  const el=document.getElementById('shop');
+  el.innerHTML='';
+  characters.forEach((c,i)=>{
+    const owned=unlocked.includes(i);
+    const div=document.createElement('div');
+    div.className='charcard'+(i===selChar?' sel':'');
+    div.innerHTML=`<div class="swatch" style="background:#${c.outfit.toString(16).padStart(6,'0')}"></div>
+      <b>${c.name}</b><span>${owned?(i===selChar?'selected':'tap to use'):('🪙 '+c.cost)}</span>`;
+    div.onclick=()=>{
+      if(owned){ selChar=i; localStorage.setItem('runnerSelChar',i); }
+      else if(bank>=c.cost){ bank-=c.cost; unlocked.push(i); selChar=i;
+        localStorage.setItem('runnerBank',bank); localStorage.setItem('runnerUnlocked',JSON.stringify(unlocked));
+        localStorage.setItem('runnerSelChar',i); }
+      scene.remove(player); player=makeCharacter(characters[selChar].skin, characters[selChar].outfit); scene.add(player);
+      renderShop();
+    };
+    el.appendChild(div);
+  });
+}
+renderShop();
+
+let audioCtx=null, muted=false, musicTimer=null;
+function ac(){ if(!audioCtx) audioCtx=new (window.AudioContext||window.webkitAudioContext)(); return audioCtx; }
+function beep(freq,dur,type='sine',vol=0.18,delay=0){
+  if(muted) return;
+  const c=ac(); const o=c.createOscillator(); const g=c.createGain();
+  o.type=type; o.frequency.value=freq; g.gain.value=vol;
+  o.connect(g); g.connect(c.destination);
+  const t=c.currentTime+delay;
+  g.gain.setValueAtTime(vol,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+  o.start(t); o.stop(t+dur);
+}
+function startMusic(){
+  if(musicTimer) return;
+  const bass=[110,110,130.8,98];
+  let step=0;
+  musicTimer=setInterval(()=>{
+    if(!muted){ beep(bass[step%4],0.35,'triangle',0.1); beep(bass[step%4]*2,0.12,'square',0.03,0.15); }
+    step++;
+  },380);
+}
+document.getElementById('muteBtn').onclick=()=>{
+  muted=!muted; document.getElementById('muteBtn').textContent=muted?'🔇':'🔊';
+};
+
+let state='menu', running=false;
+let playerLane=1, targetLane=1, jumpV=0, jumpY=0, ducking=false, duckTimer=0;
+let speed=6.5, dist=0, coins=0, runFrame=0;
+let obstacles=[], coinObjs=[], powerUps=[];
+let spawnTimer=0;
+let magnetT=0, multT=0, shieldOn=false;
+
+function reset(){
+  playerLane=1; targetLane=1; jumpV=0; jumpY=0; ducking=false; duckTimer=0;
+  speed=6.5; dist=0; coins=0; runFrame=0;
+  obstacles.forEach(o=>scene.remove(o.mesh)); obstacles=[];
+  coinObjs.forEach(o=>scene.remove(o.mesh)); coinObjs=[];
+  powerUps.forEach(o=>scene.remove(o.mesh)); powerUps=[];
+  spawnTimer=0; magnetT=0; multT=0; shieldOn=false;
+  document.getElementById('powerup').style.display='none';
+}
+
+function startGame(){
+  reset(); state='playing';
+  document.getElementById('overlay').classList.add('hide');
+  startMusic();
+}
+document.getElementById('startBtn').onclick=startGame;
+
+function endGame(){
+  state='over';
+  bank+=coins; localStorage.setItem('runnerBank',bank);
+  document.getElementById('title').textContent='Crashed! Score '+Math.floor(dist);
+  document.getElementById('sub').textContent='Coins earned: '+coins+'  |  Bank: '+bank;
+  document.getElementById('startBtn').textContent='Run Again';
+  renderShop();
+  document.getElementById('overlay').classList.remove('hide');
+  beep(90,0.4,'sawtooth',0.2);
+}
+
+function laneSwitch(dir){ targetLane=Math.min(2,Math.max(0,targetLane+dir)); }
+window.addEventListener('keydown',e=>{
+  if(state!=='playing'){ if(e.code==='Space') startGame(); return; }
+  if(e.key==='ArrowLeft') laneSwitch(-1);
+  if(e.key==='ArrowRight') laneSwitch(1);
+  if((e.key==='ArrowUp'||e.code==='Space') && jumpY<=0.01){ jumpV=0.34; beep(520,0.12,'square',0.1); }
+  if(e.key==='ArrowDown'){ ducking=true; duckTimer=30; }
+});
+let tsx=0,tsy=0;
+renderer.domElement.addEventListener('touchstart',e=>{
+  const t=e.touches[0]; tsx=t.clientX; tsy=t.clientY;
+  if(state!=='playing') startGame();
+});
+renderer.domElement.addEventListener('touchend',e=>{
+  const t=e.changedTouches[0]; const dx=t.clientX-tsx, dy=t.clientY-tsy;
+  if(Math.abs(dx)>Math.abs(dy)&&Math.abs(dx)>26){ laneSwitch(dx<0?-1:1); }
+  else if(dy<-26 && jumpY<=0.01){ jumpV=0.34; beep(520,0.12,'square',0.1); }
+  else if(dy>26){ ducking=true; duckTimer=30; }
+});
+renderer.domElement.addEventListener('mousedown',()=>{ if(state!=='playing') startGame(); });
+
+function spawnObstacle(){
+  const kinds=['crate','bar','blocker'];
+  const kind=kinds[Math.floor(Math.random()*kinds.length)];
+  const lane=Math.floor(Math.random()*3);
+  let mesh;
+  if(kind==='crate'){
+    mesh=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.9,0.9),new THREE.MeshStandardMaterial({color:0x8a5a35}));
+    mesh.position.set(laneX[lane],0.45,-70);
+  } else if(kind==='bar'){
+    mesh=new THREE.Mesh(new THREE.BoxGeometry(1.4,0.3,0.3),new THREE.MeshStandardMaterial({color:0x9aa3ad}));
+    mesh.position.set(laneX[lane],1.55,-70);
+  } else {
+    mesh=new THREE.Mesh(new THREE.BoxGeometry(1.4,1.9,0.6),new THREE.MeshStandardMaterial({color:0x6b2e2e}));
+    mesh.position.set(laneX[lane],0.95,-70);
+  }
+  scene.add(mesh);
+  obstacles.push({kind,lane,mesh});
+}
+function spawnCoins(){
+  const lane=Math.floor(Math.random()*3);
+  const n=5+Math.floor(Math.random()*4);
+  for(let i=0;i<n;i++){
+    const mesh=new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.22,0.06,14),
+      new THREE.MeshStandardMaterial({color:0xe8c04a,metalness:0.3,roughness:0.4}));
+    mesh.rotation.x=Math.PI/2;
+    mesh.position.set(laneX[lane],1.1,-72-i*1.6);
+    scene.add(mesh);
+    coinObjs.push({lane,mesh});
+  }
+}
+function spawnPower(){
+  const types=['magnet','multi','shield'];
+  const type=types[Math.floor(Math.random()*types.length)];
+  const lane=Math.floor(Math.random()*3);
+  const color=type==='magnet'?0x4dd0e1:(type==='multi'?0xffd54f:0x64b5f6);
+  const mesh=new THREE.Mesh(new THREE.OctahedronGeometry(0.32),new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:0.3}));
+  mesh.position.set(laneX[lane],1.2,-75);
+  scene.add(mesh);
+  powerUps.push({type,lane,mesh});
+}
+
+function applyPower(type){
+  beep(760,0.18,'triangle',0.15);
+  document.getElementById('powerup').style.display='block';
+  if(type==='magnet'){ magnetT=360; document.getElementById('powerup').textContent='🧲 Magnet'; }
+  if(type==='multi'){ multT=360; document.getElementById('powerup').textContent='✨ x2 Coins'; }
+  if(type==='shield'){ shieldOn=true; document.getElementById('powerup').textContent='🛡️ Shield'; }
+}
+
+const clock=new THREE.Clock();
+function update(dt){
+  if(state!=='playing') return;
+  const dtf=dt*60;
+  dist+=speed*0.045*dtf*0.2;
+  speed=Math.min(speed+0.0022*dtf*0.2,20);
+  runFrame+=speed*0.05*dtf*0.2;
+
+  playerLane += (targetLane-playerLane)*0.16*dtf*0.5;
+  jumpV -= 0.028*dtf*0.5; jumpY += jumpV*dtf*0.5;
+  if(jumpY<0){ jumpY=0; jumpV=0; }
+  if(duckTimer>0){ duckTimer-=dtf*0.5; if(duckTimer<=0) ducking=false; }
+  if(magnetT>0){ magnetT-=dtf*0.5; if(magnetT<=0) document.getElementById('powerup').style.display='none'; }
+  if(multT>0){ multT-=dtf*0.5; if(multT<=0 && magnetT<=0 && !shieldOn) document.getElementById('powerup').style.display='none'; }
+
+  player.position.x=laneXAt(playerLane);
+  player.rotation.z=(targetLane-playerLane)*-0.5;
+  player.position.y=jumpY;
+  const duckAmt=ducking?0.55:1;
+  player.scale.y=THREE.MathUtils.lerp(player.scale.y,duckAmt,0.3);
+  player.scale.x=player.scale.z=THREE.MathUtils.lerp(player.scale.x,ducking?1.15:1,0.3);
+  const bob=Math.sin(runFrame)*0.04;
+  player.userData.torso.position.y=1.15+(jumpY<=0.01?bob:0.03);
+  player.userData.legL.rotation.x=Math.sin(runFrame)*0.85;
+  player.userData.legR.rotation.x=-Math.sin(runFrame)*0.85;
+  player.userData.armL.rotation.x=-Math.sin(runFrame)*0.75;
+  player.userData.armR.rotation.x=Math.sin(runFrame)*0.75;
+
+  const moveZ=speed*0.16*dtf*0.5;
+  camera.position.x=THREE.MathUtils.lerp(camera.position.x, laneXAt(playerLane)*0.3,0.05);
+  camera.lookAt(laneXAt(playerLane)*0.3,1.3,-6);
+
+  buildings.forEach(b=>{ b.position.z+=moveZ; if(b.position.z>10){ b.position.z=-Math.random()*40-70; } });
+
+  spawnTimer-=moveZ;
+  if(spawnTimer<=0){
+    const r=Math.random();
+    if(r<0.55) spawnObstacle(); else if(r<0.85) spawnCoins(); else spawnPower();
+    spawnTimer=13+Math.random()*8;
+  }
+
+  const px=laneXAt(playerLane);
+  for(const o of obstacles){
+    o.mesh.position.z+=moveZ;
+    if(o.mesh.position.z>-1 && o.mesh.position.z<1 && !o.hit && Math.round(playerLane)===o.lane){
+      const jumping=jumpY>0.5;
+      const okJump=o.kind==='crate'&&jumping;
+      const okDuck=o.kind==='bar'&&ducking;
+      if(!okJump && !okDuck){
+        o.hit=true;
+        if(shieldOn){ shieldOn=false; beep(300,0.2,'triangle',0.15); document.getElementById('powerup').style.display='none'; }
+        else { endGame(); return; }
+      }
+    }
+  }
+  obstacles=obstacles.filter(o=>{ if(o.mesh.position.z>4){ scene.remove(o.mesh); return false; } return true; });
+
+  for(const c of coinObjs){
+    c.mesh.position.z+=moveZ;
+    c.mesh.rotation.y+=0.15;
+    if(magnetT>0){
+      c.mesh.position.x=THREE.MathUtils.lerp(c.mesh.position.x,px,0.2);
+    }
+    if(!c.got && Math.abs(c.mesh.position.z)<1.2 && (Math.round(playerLane)===c.lane || magnetT>0)){
+      c.got=true; coins+=multT>0?2:1; beep(900,0.08,'sine',0.12);
+    }
+  }
+  coinObjs=coinObjs.filter(c=>{ if(c.got){ scene.remove(c.mesh); return false; } if(c.mesh.position.z>4){ scene.remove(c.mesh); return false; } return true; });
+
+  for(const p of powerUps){
+    p.mesh.position.z+=moveZ; p.mesh.rotation.y+=0.1; p.mesh.rotation.x+=0.06;
+    if(!p.got && Math.abs(p.mesh.position.z)<1.2 && Math.round(playerLane)===p.lane){
+      p.got=true; applyPower(p.type);
+    }
+  }
+  powerUps=powerUps.filter(p=>{ if(p.got||p.mesh.position.z>4){ scene.remove(p.mesh); return false; } return true; });
+
+  document.getElementById('score').textContent=Math.floor(dist);
+  document.getElementById('coins').textContent=coins;
+}
+function laneXAt(l){
+  const l0=Math.floor(l),l1=Math.min(2,Math.ceil(l)),t=l-l0;
+  return laneX[l0]*(1-t)+laneX[l1]*t;
+}
+
+function loop(){
+  const dt=Math.min(clock.getDelta(),0.05);
+  update(dt);
+  renderer.render(scene,camera);
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
